@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class WebSocketClient implements AutoCloseable {
 
-    private static Logger logger = LoggerFactory.getLogger(WebSocketClient.class);
+    private static final Logger logger = LoggerFactory.getLogger(WebSocketClient.class);
     private static final ByteBuffer EMPTY = ByteBuffer.allocate(0);
 
     public static final int DEFAULT_PORT = 80;
@@ -138,7 +138,9 @@ public class WebSocketClient implements AutoCloseable {
      * Poll is the main method in this WebSocket client. It is used to read from the socket's
      * input buffer and parse data frames sent from the server. This should be called as fast
      * as possible. This will be blocking depending on the implementation of the socket's
-     * input stream's `read` method.
+     * input stream's `read` method. This method will only process at most one WebSocket frame
+     * at a time. If there's bytes left over in the Socket stream, the next call to poll will
+     * instead process these bytes rather than read from the wire.
      *
      * @return a raw ByteBuffer containing the payload from the server
      * @throws IOException if the socket's IO throws an exception
@@ -147,41 +149,28 @@ public class WebSocketClient implements AutoCloseable {
         if (this.socketState != SocketState.OPEN) {
             throw new IllegalStateException("Poll can only be called with an open socket");
         }
-
-        /*
-        Note here, there is a possibility of a buffer overflow not from a single frame being too large,
-        but multiple frames being fragmented in a row. We can't reset the recv buffer until all frames in
-        the buffer have been processed, so if we keep getting incomplete frames from the socket we'll eventually
-        overflow. If that happens, sorry, you found a corner case. If it starts happening to me, then I'll fix it.
-        Though I am not too sure how to fix it. We'd most likely need a circular buffer but that seems like a pain
-        to implement and would need way too many unit tests to where I'd feel comfortable with it.
-         */
-
+        // TODO: How to handle a full buffer?
         this.readBuffer.clear(); // The call to #getPayloadData() modifies the position and limit
-        int remaining = this.readBuffer.remaining() - readOffset;
-        if (remaining == 0) {
-            throw new BufferOverflowException();
+        if (frameOffset != 0) { // There's bytes left over
+
+        } else {
+            int remaining = this.readBuffer.remaining() - readOffset;
+            if (remaining == 0) {
+                throw new BufferOverflowException();
+            }
+            // Would be nice to use ByteBuffer's automatic positioning but with how websockets are fragmented, it makes it diffult
+            int readBytes = this.socket.getInputStream().read(this.readBuffer.array(), readOffset, remaining);
+            if (readBytes < 0) {
+                return EMPTY; // Should not reach this due to top-level if statement (but there's a chance it closes from there to here)
+            }
+            readOffset += readBytes;
         }
 
-        if (this.socket.getInputStream().available() < 1) {
-            return EMPTY;
-        }
-
-        // TODO: Use compact() instead of maintaining offsets
-
-        // Would be nice to use ByteBuffer's automatic positioning but IO streams do not support
-        int readBytes = this.socket.getInputStream().read(this.readBuffer.array(), readOffset, remaining);
-        if (readBytes <= 0) {
-            return EMPTY;
-        }
-
-        this.readBuffer.limit((readOffset - frameOffset) + readBytes);
         DataFrame frame = draft.getDataFrame().wrap(this.readBuffer, frameOffset);
 
         // If we got an incomplete frame, we need to exit and wait for the rest from the socket
         if (frame.isIncomplete()) {
             logger.trace("Incomplete frame received. Returning from poll");
-            readOffset += readBytes;
             return EMPTY;
         }
 
@@ -190,22 +179,20 @@ public class WebSocketClient implements AutoCloseable {
         }
 
         // If we read all the bytes from the wire, reset read and frame offsets for the next loop
-        if (frame.length() == ((readOffset + readBytes) - frameOffset)) {
+        if (frame.length() == (readOffset - frameOffset)) {
             readOffset = 0;
             frameOffset = 0;
         } else {
             // We have some extras, what do we do with it?
             // The next time we read, the readOffset should be readOffset += frame.length()
             frameOffset += frame.length();
-            readOffset = frameOffset;
+            // If we are find we're overflowing from this, we can mimic ByteBuffer#compact here
         }
-
-        logger.trace("Received opcode {}", frame.getOpcode());
 
         if (frame.getOpcode() == Opcode.CLOSING) {
             if (listener != null) listener.onClose();
+            logger.trace("Close received from server");
             this.close();
-            throw new IllegalStateException("Im closing! " + StandardCharsets.UTF_8.decode(frame.getPayloadData()));
         } else if (frame.getOpcode() == Opcode.PONG) {
             // NO-OP
             logger.trace("Pong received from server");
@@ -221,7 +208,7 @@ public class WebSocketClient implements AutoCloseable {
     }
 
     public void reconnect() throws IOException {
-        close();
+        this.close();
         this.connect();
     }
 

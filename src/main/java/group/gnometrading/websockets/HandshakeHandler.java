@@ -45,6 +45,7 @@ public class HandshakeHandler {
         } catch (TimeoutException e) {
             throw new InvalidHandshakeException(HandshakeState.TIMEOUT);
         } catch (ExecutionException e) {
+            e.printStackTrace();
             throw new InvalidHandshakeException(HandshakeState.UNKNOWN);
         }
     }

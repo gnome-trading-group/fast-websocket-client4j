@@ -12,7 +12,7 @@ import java.util.Base64;
 
 public class RFC6455 extends Draft {
     private static final String TEMPLATE;
-    private static final String PROTOCOL = "HTTP/1.1 101 Switching Protocols";
+    private static final String PROTOCOL = "HTTP/1.1 101";
     private static final String DEFAULT_PATH = "/";
     private static final ThreadLocal<ByteBuffer> ENCODING = ThreadLocal.withInitial(() -> ByteBuffer.allocate(16));
 
@@ -64,11 +64,14 @@ public class RFC6455 extends Draft {
             index++;
         }
 
-        if (index != PROTOCOL.length()) {
+        if (index < PROTOCOL.length()) {
             return HandshakeState.INVALID_PROTOCOL;
         }
 
-        index += 2; // pass \r\n
+        while (index < decoded.length() && decoded.charAt(index) != '\n') {
+            index++;
+        }
+
         int headers = 0; // header bitmap, should be 0b111
         StringBuilder builder = new StringBuilder();
 

@@ -105,8 +105,7 @@ public class DataFrame6455 implements DataFrame {
 
         this.buffer.position(index);
         this.buffer.limit(index + this.getPayloadLength());
-
-
+        this.buffer.mark();
 
         return this.buffer;
     }
