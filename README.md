@@ -125,6 +125,7 @@ Here's how to use the library:
 ```java
 WebSocketClient webSocketClient = new WebSocketClient.Builder()
         .withURI(URI.create(/* some uri */))
+        .withAutomaticReconnect(true)
         .build();
 webSocketClient.connect(); // blocking
 
@@ -133,5 +134,4 @@ while (true) {
     String decode = StandardCharsets.UTF_8.decode(payload);
     System.out.println("Got a message: " + decode);
 }
-connect();
 ```

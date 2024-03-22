@@ -9,21 +9,24 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
 class Clients {
-    private static int NUM_TRIES = 50;
+    private static int NUM_TRIES = 200;
     private static int NUM_MESSAGES = 1_000_000;
     public static void main(String[] args) throws IOException, InterruptedException {
         URI uri = URI.create("ws://localhost:443");
 
         long total = 0;
-//        LoadTester test = new FastWSBlockingLoadTester(uri);
+        long[] results = new long[NUM_TRIES];
+        LoadTester test = new FastWSBlockingLoadTester(uri);
         for (int i = 0; i < NUM_TRIES; i++) {
-//            long dur = test.runTest();
-            long dur = new JavaWSLoadTester(uri).runTest();
+            long dur = test.runTest();
+//            long dur = new JavaWSLoadTester(uri).runTest();
             System.out.println("Attempt nanos: " + i + ": " + dur);
+            results[i] = dur;
             total += dur;
         }
         System.out.println("Avg nanos: " + (total / NUM_TRIES));
         System.out.println("Avg per read: " + (total / NUM_TRIES / NUM_MESSAGES));
+        System.out.println(Arrays.toString(results));
     }
 
     private static interface LoadTester {
@@ -106,13 +109,11 @@ class Clients {
 
         @Override
         public void waitForMessage(int num) throws IOException {
-            try {
-                ByteBuffer res = this.webSocketClient.poll();
-                int parsed = res.getInt();
-                if (parsed != num) {
-                    throw new RuntimeException("Out of order");
-                }
-            } catch (IOException ignored) {}
+            ByteBuffer res = this.webSocketClient.poll();
+            int parsed = res.getInt();
+            if (parsed != num) {
+                throw new RuntimeException("Out of order");
+            }
         }
 
         public void close() throws IOException {
