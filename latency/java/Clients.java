@@ -9,15 +9,16 @@ import java.util.*;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
 class Clients {
-    private static int NUM_TRIES = 5;
-    private static int NUM_MESSAGES = 20_000_000;
+    private static int NUM_TRIES = 50;
+    private static int NUM_MESSAGES = 1_000_000;
     public static void main(String[] args) throws IOException, InterruptedException {
         URI uri = URI.create("ws://localhost:443");
 
         long total = 0;
+//        LoadTester test = new FastWSBlockingLoadTester(uri);
         for (int i = 0; i < NUM_TRIES; i++) {
-//             long dur = new JavaWSLoadTester(uri).runTest();
-            long dur = new FastWSBlockingLoadTester(uri).runTest();
+//            long dur = test.runTest();
+            long dur = new JavaWSLoadTester(uri).runTest();
             System.out.println("Attempt nanos: " + i + ": " + dur);
             total += dur;
         }
@@ -28,6 +29,7 @@ class Clients {
     private static interface LoadTester {
 
         default long runTest() throws IOException {
+            this.connectToWS();
             long start = System.nanoTime();
             for (int i = 0; i < NUM_MESSAGES; i++) {
                 waitForMessage(i);
@@ -38,6 +40,7 @@ class Clients {
         }
 
         void close() throws IOException;
+        void connectToWS() throws IOException;
         void waitForMessage(int num) throws IOException;
     }
 
@@ -47,8 +50,15 @@ class Clients {
         public JavaWSLoadTester(URI uri) throws InterruptedException {
             super(uri);
             this.messages = new ConcurrentLinkedDeque<>();
-            this.connectBlocking();
-            System.out.println("Connected");
+        }
+
+        @Override
+        public void connectToWS() {
+            try {
+                this.connectBlocking();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
 
         @Override
@@ -85,21 +95,24 @@ class Clients {
         public FastWSBlockingLoadTester(URI uri) throws IOException {
             this.webSocketClient = new WebSocketClient.Builder()
                     .withURI(uri)
+                    .withAutomaticReconnect(true)
+                    .withTimeoutInMillis(2000)
                     .build();
+        }
+
+        public void connectToWS() throws IOException {
             this.webSocketClient.connect();
-            System.out.println("Connected");
         }
 
         @Override
         public void waitForMessage(int num) throws IOException {
-            ByteBuffer res = this.webSocketClient.poll();
-            if (res.remaining() != 4) {
-                System.out.println(res.remaining());
-            }
-            int parsed = res.getInt();
-            if (parsed != num) {
-                throw new RuntimeException("Out of order");
-            }
+            try {
+                ByteBuffer res = this.webSocketClient.poll();
+                int parsed = res.getInt();
+                if (parsed != num) {
+                    throw new RuntimeException("Out of order");
+                }
+            } catch (IOException ignored) {}
         }
 
         public void close() throws IOException {

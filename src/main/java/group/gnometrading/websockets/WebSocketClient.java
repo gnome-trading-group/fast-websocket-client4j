@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import javax.net.SocketFactory;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Socket;
 import java.net.URI;
 import java.nio.BufferOverflowException;
@@ -28,8 +29,8 @@ public class WebSocketClient implements AutoCloseable {
 
     public static final int DEFAULT_PORT = 80;
     public static final int DEFAULT_WSS_PORT = 443;
-    // TODO: Should we look this up dynamically in each system?
-    public static final int RECV_BUF = 32768;  // 32kb
+    // Keep this less than 32mb so it fits entirely in the L1 cache
+    public static final int RECV_BUF = 2^13;  // 8kb
     public static final int SEND_BUF = 2048; // 2kb
 
     private final URI uri;
@@ -39,12 +40,17 @@ public class WebSocketClient implements AutoCloseable {
     private final CircularFlyweightQueue<ByteBuffer> writeQueue;
     private final WebSocketListener listener;
     private final Draft draft;
-    private Thread writerThread;
+    private Thread writerThread, timeoutThread;
     private final ByteBuffer readBuffer;
     private int readOffset = 0, frameOffset = 0;
+    private long lastMessageMillis = 0;
+    private final boolean automaticReconnect;
+    private final long timeoutInMillis;
+    private final DataFrame frame;
+    private InputStream inputStream;
 
     private WebSocketClient(URI uri, SocketFactory socketFactory, int writeQueueCapacity, WebSocketListener listener,
-                            Draft draft) {
+                            Draft draft, boolean automaticReconnect, long timeoutInMillis) {
         // Don't use SocketChannels for now. Socket has a more general API which we can potentially abstract
         // into kernel bypass later.
         this.uri = uri;
@@ -55,7 +61,14 @@ public class WebSocketClient implements AutoCloseable {
         this.writeQueue = new CircularFlyweightQueue<>(writeQueueCapacity, () -> ByteBuffer.allocate(SEND_BUF));
         this.listener = listener;
         this.draft = draft;
+        this.frame = this.draft.getDataFrame();
         this.readBuffer = ByteBuffer.allocate(RECV_BUF);
+        this.automaticReconnect = automaticReconnect;
+        this.timeoutInMillis = timeoutInMillis;
+    }
+
+    public SocketState getSocketState() {
+        return this.socketState;
     }
 
     /**
@@ -76,6 +89,7 @@ public class WebSocketClient implements AutoCloseable {
         this.socketState = SocketState.CONNECTING;
         int port = this.uri.getPort() == -1 ? (this.uri.getScheme().equals("wss") ? DEFAULT_WSS_PORT : DEFAULT_PORT) : this.uri.getPort();
         this.socket = socketFactory.createSocket(this.uri.getHost(), port);
+        this.inputStream = this.socket.getInputStream();
 
         HandshakeInput input = new HandshakeInput(this.uri);
         HandshakeHandler.attemptHandshake(this.socket, this.draft, input);
@@ -84,8 +98,15 @@ public class WebSocketClient implements AutoCloseable {
         this.writerThread.setDaemon(true);
         this.writerThread.start();
 
+        if (this.automaticReconnect) {
+            this.lastMessageMillis = System.currentTimeMillis();
+            this.timeoutThread = new Thread(new WebSocketTimeoutThread());
+            this.timeoutThread.setDaemon(true);
+            this.timeoutThread.start();
+        }
+
+        if (listener != null) this.listener.onConnect();
         this.socketState = SocketState.OPEN;
-        if (listener != null) this.listener.onStart();
     }
 
     private void write(Opcode opcode, byte[] bytes) {
@@ -134,43 +155,55 @@ public class WebSocketClient implements AutoCloseable {
      * as possible. This will block until an entire WebSocket frame is received. This method
      * will only process at most one WebSocket frame at a time.
      *
+     * If a PING message is received, a PONG will be sent in return and continue polling for
+     * a different frame. If PONG is received, polling will continue until a new frame.
+     *
      * @return a raw ByteBuffer containing the payload from the server
      * @throws IOException if the socket's IO throws an exception
      */
     public ByteBuffer poll() throws IOException {
+        if (socketState != SocketState.OPEN) {
+            return EMPTY;
+        }
+
         this.readBuffer.clear();
-        if (frameOffset > 0) {
+        if (frameOffset > (RECV_BUF >> 1)) {
             System.arraycopy(this.readBuffer.array(), frameOffset, this.readBuffer.array(), 0, readOffset - frameOffset);
             readOffset -= frameOffset;
             frameOffset = 0;
         }
 
-        DataFrame frame = draft.getDataFrame().wrap(this.readBuffer, 0, readOffset);
-        while (frame.isIncomplete()) {
-            int remaining = this.readBuffer.remaining() - readOffset;
+        this.frame.wrap(this.readBuffer, frameOffset, readOffset - frameOffset);
+        while (this.frame.isIncomplete()) {
+            int remaining = RECV_BUF - readOffset;
             if (remaining <= 0) {
                 throw new BufferOverflowException();
             }
 
-            int readBytes = this.socket.getInputStream().read(this.readBuffer.array(), readOffset, remaining);
+            int readBytes = this.inputStream.read(this.readBuffer.array(), readOffset, remaining);
             if (readBytes < 0) {
-                System.out.println("CLOSED EARLY!");
                 return EMPTY; // Closed while polling
             }
 
+            if (automaticReconnect) {
+                // Use wall-clock due to separate threads most likely on different cores
+                // System#nanoTime is slower and is not meant for cross-core
+                lastMessageMillis = System.currentTimeMillis();
+            }
+
             readOffset += readBytes;
-            frame = draft.getDataFrame().wrap(this.readBuffer, 0, readOffset);
+            this.frame.wrap(this.readBuffer, frameOffset, readOffset - frameOffset);
         }
 
-        if (frame.isFragment()) {
+        if (this.frame.isFragment()) {
             throw new IllegalStateException("Sorry, I haven't implemented fragments yet.");
         }
-        frameOffset = frame.length();
+        frameOffset += this.frame.length();
 
-        switch (frame.getOpcode()) {
+        switch (this.frame.getOpcode()) {
             case TEXT:
             case BINARY:
-                return frame.getPayloadData();
+                return this.frame.getPayloadData();
             case CLOSING: {
                 if (listener != null) listener.onClose();
                 logger.trace("Close received from server");
@@ -179,7 +212,6 @@ public class WebSocketClient implements AutoCloseable {
             }
             case PING: {
                 pong();
-                System.out.println("SENT PING!");
                 return poll();
             }
             case PONG: {
@@ -187,7 +219,7 @@ public class WebSocketClient implements AutoCloseable {
                 return poll();
             }
             default:
-                throw new IllegalStateException("Unhandled opcode: " + frame.getOpcode());
+                throw new IllegalStateException("Unhandled opcode: " + this.frame.getOpcode());
         }
     }
 
@@ -203,24 +235,48 @@ public class WebSocketClient implements AutoCloseable {
     @Override
     public void close() throws IOException {
         // Don't care about flushing write buffer if this is called.
+        this.socketState = SocketState.CLOSED;
         if (this.socket != null) {
             this.socket.close();
+            this.socket = null;
         }
 
         if (this.writerThread != null) {
             this.writerThread.interrupt();
             try {
                 this.writerThread.join();
-            } catch (InterruptedException ign) {
-            }
+            } catch (InterruptedException ignored) {}
+            this.writerThread = null;
         }
 
-        this.socketState = SocketState.CLOSED;
+        if (this.timeoutThread != null) {
+            this.timeoutThread.interrupt();
+            try {
+                this.timeoutThread.join();
+            } catch (InterruptedException ignored) {}
+            this.timeoutThread = null;
+        }
+
         this.writeQueue.clear();
         this.readOffset = this.frameOffset = 0;
+    }
 
-        this.socket = null;
-        this.writerThread = null;
+    private class WebSocketTimeoutThread implements Runnable {
+        @Override
+        public void run() {
+            while (!Thread.interrupted() && socketState == SocketState.OPEN) {
+                long millis = System.currentTimeMillis() - lastMessageMillis;
+                if (millis > timeoutInMillis) {
+                    try {
+                        logger.trace("Attempting to reconnect due to timeout");
+                        if (listener != null) {
+                            listener.onTimeout();
+                        }
+                        reconnect();
+                    } catch (IOException ignore) {}
+                }
+            }
+        }
     }
 
     private class WebSocketWriterThread implements Runnable {
@@ -249,9 +305,9 @@ public class WebSocketClient implements AutoCloseable {
     public static class Builder { // Lombok would be nice... but we're lightweight
         private URI uri;
         private SocketFactory socketFactory;
-        private boolean automaticReconnect = true;
+        private boolean automaticReconnect = false;
         private int writeQueueCapacity = 10;
-        private int timeoutInMs = 5_000;
+        private int timeoutInMillis = 5_000;
         private WebSocketListener listener;
         private Draft draft;
 
@@ -277,8 +333,8 @@ public class WebSocketClient implements AutoCloseable {
             return this;
         }
 
-        public Builder withTimeoutInMs(int timeoutInMs) {
-            this.timeoutInMs = timeoutInMs;
+        public Builder withTimeoutInMillis(int timeoutInMillis) {
+            this.timeoutInMillis = timeoutInMillis;
             return this;
         }
 
@@ -305,7 +361,8 @@ public class WebSocketClient implements AutoCloseable {
                 draft = new RFC6455();
             }
 
-            return new WebSocketClient(uri, socketFactory, writeQueueCapacity, listener, draft);
+            return new WebSocketClient(uri, socketFactory, writeQueueCapacity, listener, draft, automaticReconnect,
+                    timeoutInMillis);
         }
     }
 }

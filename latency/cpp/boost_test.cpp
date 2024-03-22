@@ -17,8 +17,8 @@ namespace ip = boost::asio::ip;
 namespace chrono = std::chrono;
 using tcp = ip::tcp;
 
-int NUM_MESSAGES = 20000000;
-int NUM_TRIES = 5;
+int NUM_MESSAGES = 1000000;
+int NUM_TRIES = 100;
 
 void printBits(int64_t item) {
     std::bitset<64> bits(item);

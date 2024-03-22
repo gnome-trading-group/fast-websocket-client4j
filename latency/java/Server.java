@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Random;
 
 class Server extends WebSocketServer  {
-    private int NUM_MESSAGES = 20_000_000;
+    private int NUM_MESSAGES = 1_000_000;
 
     public static void main(String[] args) {
         Server s = new Server();
@@ -24,11 +24,6 @@ class Server extends WebSocketServer  {
 
     @Override
     public void onOpen(WebSocket webSocket, ClientHandshake clientHandshake) {
-//        try {
-//            Thread.sleep(500);
-//        } catch (InterruptedException e) {
-//            throw new RuntimeException(e);
-//        }
         ByteBuffer buffer = ByteBuffer.allocate(4);
         for (int i = 0; i < NUM_MESSAGES; i++) {
             buffer.clear();
