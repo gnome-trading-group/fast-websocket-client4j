@@ -14,11 +14,13 @@ public class DataFrame6455 implements DataFrame {
     }
 
     private ByteBuffer buffer;
+    private int limit;
     private int offset;
 
     @Override
-    public DataFrame wrap(ByteBuffer buffer, int offset) {
+    public DataFrame wrap(ByteBuffer buffer, int offset, int n) {
         this.buffer = buffer;
+        this.limit = n;
         this.offset = offset;
         return this;
     }
@@ -104,7 +106,7 @@ public class DataFrame6455 implements DataFrame {
         }
 
         this.buffer.position(index);
-        this.buffer.limit(index + this.getPayloadLength());
+        this.buffer.limit(index + payloadLength);
         this.buffer.mark();
 
         return this.buffer;
@@ -129,21 +131,21 @@ public class DataFrame6455 implements DataFrame {
     @Override
     public boolean isIncomplete() {
         int requiredOctets = 1;
-        if (this.buffer.remaining() <= requiredOctets) {
+        if (this.limit <= requiredOctets) {
             return true;
         }
 
         requiredOctets += this.getPayloadLengthOctets();
-        if (this.buffer.remaining() < requiredOctets) {
+        if (this.limit < requiredOctets) {
             return true;
         }
 
         requiredOctets += this.masked() ? 4 : 0;
-        if (this.buffer.remaining() < requiredOctets) {
+        if (this.limit < requiredOctets) {
             return true;
         }
 
         requiredOctets += this.getPayloadLength();
-        return this.buffer.remaining() < requiredOctets;
+        return this.limit < requiredOctets;
     }
 }

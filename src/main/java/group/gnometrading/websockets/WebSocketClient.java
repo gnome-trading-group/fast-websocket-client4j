@@ -17,7 +17,6 @@ import java.net.URI;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
 
 /**
  * A very specific WebSocket client. See the README for details on why.
@@ -37,28 +36,23 @@ public class WebSocketClient implements AutoCloseable {
     private final SocketFactory socketFactory;
     private SocketState socketState;
     private Socket socket;
-    private final boolean automaticReconnect;
     private final CircularFlyweightQueue<ByteBuffer> writeQueue;
-    private final long timeoutNanos;
-    private final long lastMessageNanos = -1;
     private final WebSocketListener listener;
     private final Draft draft;
     private Thread writerThread;
     private final ByteBuffer readBuffer;
     private int readOffset = 0, frameOffset = 0;
 
-    private WebSocketClient(URI uri, SocketFactory socketFactory, boolean automaticReconnect,
-                            int writeQueueCapacity, int timeoutInMs, WebSocketListener listener, Draft draft) {
+    private WebSocketClient(URI uri, SocketFactory socketFactory, int writeQueueCapacity, WebSocketListener listener,
+                            Draft draft) {
         // Don't use SocketChannels for now. Socket has a more general API which we can potentially abstract
         // into kernel bypass later.
         this.uri = uri;
         this.socketFactory = socketFactory;
         this.socketState = SocketState.CLOSED;
-        this.automaticReconnect = automaticReconnect;
         // Allocate the ByteBuffers on the heap rather than in off-heap memory because we cannot use the addresses
         // of the buffers into send syscall directly, so copying is faster on the heap.
         this.writeQueue = new CircularFlyweightQueue<>(writeQueueCapacity, () -> ByteBuffer.allocate(SEND_BUF));
-        this.timeoutNanos = TimeUnit.NANOSECONDS.convert(timeoutInMs, TimeUnit.MILLISECONDS);
         this.listener = listener;
         this.draft = draft;
         this.readBuffer = ByteBuffer.allocate(RECV_BUF);
@@ -100,7 +94,7 @@ public class WebSocketClient implements AutoCloseable {
                 throw new IllegalArgumentException("Write input exceeds max length");
             }
 
-            DataFrame encoder = draft.getDataFrame().wrap(buffer, 0);
+            DataFrame encoder = draft.getDataFrame().wrap(buffer);
             encoder.encode(opcode, bytes);
             buffer.flip();
         });
@@ -137,74 +131,64 @@ public class WebSocketClient implements AutoCloseable {
     /**
      * Poll is the main method in this WebSocket client. It is used to read from the socket's
      * input buffer and parse data frames sent from the server. This should be called as fast
-     * as possible. This will be blocking depending on the implementation of the socket's
-     * input stream's `read` method. This method will only process at most one WebSocket frame
-     * at a time. If there's bytes left over in the Socket stream, the next call to poll will
-     * instead process these bytes rather than read from the wire.
+     * as possible. This will block until an entire WebSocket frame is received. This method
+     * will only process at most one WebSocket frame at a time.
      *
      * @return a raw ByteBuffer containing the payload from the server
      * @throws IOException if the socket's IO throws an exception
      */
     public ByteBuffer poll() throws IOException {
-        if (this.socketState != SocketState.OPEN) {
-            throw new IllegalStateException("Poll can only be called with an open socket");
+        this.readBuffer.clear();
+        if (frameOffset > 0) {
+            System.arraycopy(this.readBuffer.array(), frameOffset, this.readBuffer.array(), 0, readOffset - frameOffset);
+            readOffset -= frameOffset;
+            frameOffset = 0;
         }
-        // TODO: How to handle a full buffer?
-        this.readBuffer.clear(); // The call to #getPayloadData() modifies the position and limit
-        if (frameOffset != 0) { // There's bytes left over
 
-        } else {
+        DataFrame frame = draft.getDataFrame().wrap(this.readBuffer, 0, readOffset);
+        while (frame.isIncomplete()) {
             int remaining = this.readBuffer.remaining() - readOffset;
-            if (remaining == 0) {
+            if (remaining <= 0) {
                 throw new BufferOverflowException();
             }
-            // Would be nice to use ByteBuffer's automatic positioning but with how websockets are fragmented, it makes it diffult
+
             int readBytes = this.socket.getInputStream().read(this.readBuffer.array(), readOffset, remaining);
             if (readBytes < 0) {
-                return EMPTY; // Should not reach this due to top-level if statement (but there's a chance it closes from there to here)
+                System.out.println("CLOSED EARLY!");
+                return EMPTY; // Closed while polling
             }
+
             readOffset += readBytes;
-        }
-
-        DataFrame frame = draft.getDataFrame().wrap(this.readBuffer, frameOffset);
-
-        // If we got an incomplete frame, we need to exit and wait for the rest from the socket
-        if (frame.isIncomplete()) {
-            logger.trace("Incomplete frame received. Returning from poll");
-            return EMPTY;
+            frame = draft.getDataFrame().wrap(this.readBuffer, 0, readOffset);
         }
 
         if (frame.isFragment()) {
             throw new IllegalStateException("Sorry, I haven't implemented fragments yet.");
         }
+        frameOffset = frame.length();
 
-        // If we read all the bytes from the wire, reset read and frame offsets for the next loop
-        if (frame.length() == (readOffset - frameOffset)) {
-            readOffset = 0;
-            frameOffset = 0;
-        } else {
-            // We have some extras, what do we do with it?
-            // The next time we read, the readOffset should be readOffset += frame.length()
-            frameOffset += frame.length();
-            // If we are find we're overflowing from this, we can mimic ByteBuffer#compact here
+        switch (frame.getOpcode()) {
+            case TEXT:
+            case BINARY:
+                return frame.getPayloadData();
+            case CLOSING: {
+                if (listener != null) listener.onClose();
+                logger.trace("Close received from server");
+                this.close();
+                return EMPTY;
+            }
+            case PING: {
+                pong();
+                System.out.println("SENT PING!");
+                return poll();
+            }
+            case PONG: {
+                logger.trace("Pong received from server");
+                return poll();
+            }
+            default:
+                throw new IllegalStateException("Unhandled opcode: " + frame.getOpcode());
         }
-
-        if (frame.getOpcode() == Opcode.CLOSING) {
-            if (listener != null) listener.onClose();
-            logger.trace("Close received from server");
-            this.close();
-        } else if (frame.getOpcode() == Opcode.PONG) {
-            // NO-OP
-            logger.trace("Pong received from server");
-            return EMPTY;
-        } else if (frame.getOpcode() == Opcode.PING) {
-            pong();
-        } else if (frame.getOpcode() == Opcode.CONTINUOUS) {
-            throw new IllegalStateException("Uh oh! It's continuous!");
-        }
-
-        // Binary or text at this point
-        return frame.getPayloadData();
     }
 
     public void reconnect() throws IOException {
@@ -321,8 +305,7 @@ public class WebSocketClient implements AutoCloseable {
                 draft = new RFC6455();
             }
 
-            return new WebSocketClient(uri, socketFactory, automaticReconnect, writeQueueCapacity, timeoutInMs,
-                    listener, draft);
+            return new WebSocketClient(uri, socketFactory, writeQueueCapacity, listener, draft);
         }
     }
 }

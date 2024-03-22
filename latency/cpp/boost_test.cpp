@@ -5,60 +5,67 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <climits>
+#include <bitset>
+#include <chrono>
 
-namespace beast = boost::beast;         // from <boost/beast.hpp>
-namespace http = beast::http;           // from <boost/beast/http.hpp>
-namespace websocket = beast::websocket; // from <boost/beast/websocket.hpp>
-namespace net = boost::asio;            // from <boost/asio.hpp>
-using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace websocket = beast::websocket;
+namespace net = boost::asio;
+namespace ip = boost::asio::ip;
+namespace chrono = std::chrono;
+using tcp = ip::tcp;
 
-int NUM_MESSAGES = 5_000_000;
+int NUM_MESSAGES = 20000000;
+int NUM_TRIES = 5;
 
-// Sends a WebSocket message and prints the response
+void printBits(int64_t item) {
+    std::bitset<64> bits(item);
+    std::cout << bits << std::endl;
+}
+
 int main(int argc, char** argv)
 {
     try
     {
-        // The io_context is required for all I/O
         net::io_context ioc;
 
-        // These objects perform our I/O
         tcp::resolver resolver{ioc};
+        tcp::resolver::query query("localhost", "443");
         websocket::stream<tcp::socket> ws{ioc};
+        auto const results = resolver.resolve(query);
 
-        // Look up the domain name
-        auto const results = resolver.resolve("localhost", 443);
+        chrono::nanoseconds total{0};
+        for (int i = 0; i < NUM_TRIES; i++) {
 
-        // Make the connection on the IP address we get from a lookup
-        auto ep = net::connect(ws.next_layer(), results);
+            auto ep = net::connect(ws.next_layer(), results);
+            ws.handshake("localhost:443", "/");
 
-        // Update the host_ string. This will provide the value of the
-        // Host HTTP header during the WebSocket handshake.
-        // See https://tools.ietf.org/html/rfc7230#section-5.4
-        host += ':' + std::to_string(ep.port());
+            chrono::nanoseconds start = chrono::high_resolution_clock::now().time_since_epoch();
+            beast::flat_buffer buffer;
+            for (int i = 0; i < NUM_MESSAGES; i++) {
+                buffer.clear();
+                ws.read(buffer);
+                unsigned char* ptr = (unsigned char*) buffer.cdata().data();
+                int32_t res = (ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3];
+                if (i != res) {
+                    std::cout << i << " != " << res << std::endl;
+                    throw std::bad_exception();
+                }
+            }
 
-        // Perform the websocket handshake
-        ws.handshake(host, "/");
+            chrono::nanoseconds end = chrono::high_resolution_clock::now().time_since_epoch();
 
-        // Send the message
-        ws.write(net::buffer(std::string(text)));
+            auto diff = end - start;
+            std::cout << "nanos ellapsed: " << (end - start).count() << std::endl;
 
-        // This buffer will hold the incoming message
-        beast::flat_buffer buffer;
-
-        for (int i = 0; i < NUM_MESSAGES; i++) {
-            ws.read(buffer);
+            ws.close(websocket::close_code::normal);
+            total += diff;
         }
 
-        // Read a message into our buffer
-
-        // Close the WebSocket connection
-        ws.close(websocket::close_code::normal);
-
-        // If we get here then the connection is closed gracefully
-
-        // The make_printable() function helps print a ConstBufferSequence
-        std::cout << beast::make_printable(buffer.data()) << std::endl;
+        std::cout << "avg: " << total.count() / NUM_TRIES << std::endl;
+        std::cout << "avg per read: " << total.count() / NUM_TRIES / NUM_MESSAGES << std::endl;
     }
     catch(std::exception const& e)
     {

@@ -45,7 +45,6 @@ public class HandshakeHandler {
         } catch (TimeoutException e) {
             throw new InvalidHandshakeException(HandshakeState.TIMEOUT);
         } catch (ExecutionException e) {
-            e.printStackTrace();
             throw new InvalidHandshakeException(HandshakeState.UNKNOWN);
         }
     }
@@ -63,7 +62,9 @@ public class HandshakeHandler {
         ByteBuffer buffer = ByteBuffer.allocate(HANDSHAKE_RECV_BUFFER);
         int readBytes, totalBytes = 0;
         try {
-            while ((readBytes = socket.getInputStream().read(buffer.array(), totalBytes, HANDSHAKE_RECV_BUFFER)) != -1) {
+            // Read one byte at a time to avoid consuming more bytes than the handshake size
+            // This becomes a problem if the WebSocket server immediately sends frames after connecting
+            while ((readBytes = socket.getInputStream().read(buffer.array(), totalBytes, 1)) != -1) {
                 totalBytes += readBytes;
                 buffer.limit(totalBytes);
                 HandshakeState result = draft.parseHandshake(buffer);

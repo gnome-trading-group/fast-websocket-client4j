@@ -10,11 +10,21 @@ import java.nio.ByteBuffer;
 public interface DataFrame {
     /**
      * Wrap a buffer from offset `offset`. Used for encoding and decoding message frames.
+     * Assumes that the input ByteBuffer has at least size >= (offset + n).
      * @param buffer the buffer to wrap
-     * @param offset the offset to start from
+     * @param offset the offset to index from
+     * @param n the size in bytes of the frame -- used for DataFrame#isIncomplete
      * @return the class instance
      */
-    DataFrame wrap(ByteBuffer buffer, int offset);
+    DataFrame wrap(ByteBuffer buffer, int offset, int n);
+
+    default DataFrame wrap(ByteBuffer buffer, int offset) {
+        return wrap(buffer, offset, 0);
+    }
+
+    default DataFrame wrap(ByteBuffer buffer) {
+        return wrap(buffer, 0, 0);
+    }
 
     /**
      * @return true if the message frame is not complete
