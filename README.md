@@ -1,3 +1,7 @@
+![Gump and Deploy](https://github.com/gnome-trading-group/fast-websocket-client4j/actions/workflows/bump-and-deploy.yml/badge.svg)
+![GitHub Tag](https://img.shields.io/github/v/tag/gnome-trading-group/fast-websocket-client4j)
+
+
 # Fast websocket client for Java
 
 I wrote this project when I needed a *fast* websocket client. 
@@ -126,6 +130,30 @@ are interested enough, send a socket facade which runs through some
 Kernel bypassing software like [DPDK's](https://www.dpdk.org/). Note, I haven't created
 my own Socket facade yet, and if I end up doing that, most likely will change
 this contract between sockets and the WebSocket client.
+
+# Installation
+
+This package gets automatically pushed to [GitHub Packages](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry).
+
+```xml
+<repositories>
+    <repository>
+        <id>github</id>
+        <name>Gnome Trading Group Repo</name>
+        <url>https://maven.pkg.github.com/gnome-trading-group/*</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <dependency>
+        <groupId>group.gnometrading</groupId>
+        <artifactId>fast-websocket-client4j</artifactId>
+        <version>{FIND THE LATEST VERSION ABOVE}</version>
+    </dependency>
+</dependencies>
+```
+
+If you bother me enough, maybe I'll publish it to Maven Central.
 
 # Usage
 
