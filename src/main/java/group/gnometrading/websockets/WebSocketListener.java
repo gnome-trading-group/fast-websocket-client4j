@@ -2,23 +2,24 @@ package group.gnometrading.websockets;
 
 public interface WebSocketListener {
     /**
-     * Sends when the socket is connected and active.
+     * Sends when the socket is connected and active. This will send before `SocketState == OPEN`.
      */
-    void onConnect();
+    default void onConnect() {}
 
     /**
-     * Sends from an unexpected, non-fatal error from reading/writing to the websocket.
+     * Sends from an unexpected, non-fatal error from writing to the websocket.
      * @param e exception thrown
      */
-    void onError(Exception e);
+    default void onWriteError(Exception e) {}
 
     /**
-     * Sends when the server manually closes the connection. This will not auto-reconnect.
+     * Sends when the server manually closes the connection. This will not trigger an automatic reconnect.
      */
-    void onClose();
+    default void onClose() {}
 
     /**
-     * Sends when the socket is timed out due to no message in a certain amount of milliseconds.
+     * Sends when the socket is timed out due to no message in a certain amount of milliseconds. This will
+     * be followed by an automatic reconnect.
      */
-    void onTimeout();
+    default void onTimeout() {}
 }

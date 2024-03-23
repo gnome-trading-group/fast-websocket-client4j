@@ -18,7 +18,7 @@ namespace chrono = std::chrono;
 using tcp = ip::tcp;
 
 int NUM_MESSAGES = 1000000;
-int NUM_TRIES = 100;
+int NUM_TRIES = 200;
 
 void printBits(int64_t item) {
     std::bitset<64> bits(item);
@@ -34,12 +34,13 @@ int main(int argc, char** argv)
         tcp::resolver resolver{ioc};
         tcp::resolver::query query("localhost", "443");
         websocket::stream<tcp::socket> ws{ioc};
-        auto const results = resolver.resolve(query);
+        auto const q_results = resolver.resolve(query);
 
         chrono::nanoseconds total{0};
+        chrono::nanoseconds* results = new chrono::nanoseconds[NUM_TRIES];
         for (int i = 0; i < NUM_TRIES; i++) {
 
-            auto ep = net::connect(ws.next_layer(), results);
+            auto ep = net::connect(ws.next_layer(), q_results);
             ws.handshake("localhost:443", "/");
 
             chrono::nanoseconds start = chrono::high_resolution_clock::now().time_since_epoch();
@@ -62,10 +63,19 @@ int main(int argc, char** argv)
 
             ws.close(websocket::close_code::normal);
             total += diff;
+            results[i] = diff;
         }
 
         std::cout << "avg: " << total.count() / NUM_TRIES << std::endl;
         std::cout << "avg per read: " << total.count() / NUM_TRIES / NUM_MESSAGES << std::endl;
+        std::cout << "[";
+        for (int i = 0; i < NUM_TRIES; i++) {
+            std::cout << results[i].count();
+            if (i < NUM_TRIES - 1) {
+                std::cout << ", ";
+            }
+        }
+        std::cout << "]" << std::endl;
     }
     catch(std::exception const& e)
     {

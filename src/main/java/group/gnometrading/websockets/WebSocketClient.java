@@ -296,9 +296,10 @@ public class WebSocketClient implements AutoCloseable {
                 socket.getOutputStream().write(buffer.array(), 0, buffer.limit());
             } catch (IOException e) {
                 logger.error("Error received writing output", e);
-                if (listener != null) listener.onError(e);
+                if (listener != null) listener.onWriteError(e);
+            } finally {
+                buffer.clear();
             }
-            buffer.clear();
         }
     }
 

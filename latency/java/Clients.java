@@ -16,10 +16,10 @@ class Clients {
 
         long total = 0;
         long[] results = new long[NUM_TRIES];
-        LoadTester test = new FastWSBlockingLoadTester(uri);
+//        LoadTester test = new FastWSBlockingLoadTester(uri);
         for (int i = 0; i < NUM_TRIES; i++) {
-            long dur = test.runTest();
-//            long dur = new JavaWSLoadTester(uri).runTest();
+//            long dur = test.runTest();
+            long dur = new JavaWSLoadTester(uri).runTest();
             System.out.println("Attempt nanos: " + i + ": " + dur);
             results[i] = dur;
             total += dur;
