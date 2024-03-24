@@ -94,7 +94,7 @@ The code to generate these numbers exists in the `latency/` folder.
 At a high level, this is the *rough* estimate of the time it takes to
 consume one message from the wire. This is extrapolated by taking
 200 samples of reading 1,000,000 messages of sequential numbers. Read more about
-the latency and things on this [blog post](TODO).
+the latency and things on this [blog post](https://mprey.github.io/writing-a-websocket-client/).
 
 ## Limited allocations
 
