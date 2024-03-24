@@ -4,7 +4,7 @@
 
     <groupId>group.gnometrading</groupId>
     <artifactId>fast-websocket-client4j</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4-SNAPSHOT</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -35,7 +35,7 @@
     <scm>
         <connection>scm:git:git@github.com:gnome-trading-group/fast-websocket-client4j.git</connection>
         <developerConnection>scm:git:git@github.com:gnome-trading-group/fast-websocket-client4j.git</developerConnection>
-        <tag>fast-websocket-client4j-1.0.3</tag>
+        <tag>HEAD</tag>
     </scm>
 
     <distributionManagement>
